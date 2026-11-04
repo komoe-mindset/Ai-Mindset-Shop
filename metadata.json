@@ -1,0 +1,6 @@
+{
+  "name": "AiMindset Shop",
+  "description": "Telegram shop platform for Myanmar small businesses featuring Merchant Dashboard and Telegram Web App Customer Shop.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
