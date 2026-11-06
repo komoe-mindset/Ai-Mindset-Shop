@@ -5,21 +5,24 @@ import MindyMascot from '../components/MindyMascot.jsx';
 import LanguageToggle from '../components/LanguageToggle.jsx';
 
 export default function Login({ onNavigate }) {
-  const { lang, t, loginDemo } = useShopStore();
-  const [email, setEmail] = useState('merchant@aimindset.mm');
-  const [password, setPassword] = useState('demo1234');
+  const { lang, t, login } = useShopStore();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [authError, setAuthError] = useState('');
 
-  const handleLoginSubmit = (e) => {
+  const handleLoginSubmit = async (e) => {
     e.preventDefault();
     setIsLoading(true);
+    setAuthError('');
 
-    // TODO - replace demo login with Supabase Auth.
-    setTimeout(() => {
-      loginDemo();
-      setIsLoading(false);
+    const res = await login({ email, password });
+    setIsLoading(false);
+    if (res.success) {
       onNavigate('/dashboard');
-    }, 400);
+    } else {
+      setAuthError(res.error || (lang === 'mm' ? 'အီးမေးလ် သို့မဟုတ် စကားဝှက် မှားယွင်းနေပါသည်' : 'Invalid email or password'));
+    }
   };
 
   return (
@@ -93,7 +96,7 @@ export default function Login({ onNavigate }) {
                   {t.nav.login}
                 </h2>
                 <p className="text-xs text-neutral-500 mt-1">
-                  {t.login.guestTip}
+                  {lang === 'mm' ? 'သင့်ဆိုင်ရှင် အကောင့်ဖြင့် ဝင်ရောက်ပါ' : 'Sign in with your merchant credentials'}
                 </p>
               </div>
 
@@ -126,22 +129,18 @@ export default function Login({ onNavigate }) {
                   />
                 </div>
 
-                {/* Demo notice badge */}
-                <div className="p-3 bg-[#A8E6CF]/25 rounded-2xl border border-[#74C8AB] flex items-center gap-2.5 text-xs text-[#194D3B]">
-                  <ShieldCheck className="w-4 h-4 text-[#194D3B] shrink-0" />
-                  <span className="font-semibold">
-                    {lang === 'mm'
-                      ? 'သရုပ်ပြအကောင့်ဖြင့် တိုက်ရိုက် စမ်းသပ်နိုင်ပါသည်'
-                      : 'Demo credentials filled. Click below to enter merchant dashboard.'}
-                  </span>
-                </div>
+                {authError && (
+                  <div className="p-3 bg-[#FFD6E0] rounded-2xl border border-[#FFA8BF] text-xs text-[#8C2442] font-semibold">
+                    {authError}
+                  </div>
+                )}
 
                 <button
                   type="submit"
                   disabled={isLoading}
                   className="w-full cartoon-btn-primary py-3 px-6 text-sm sm:text-base flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
                 >
-                  <span>{isLoading ? t.login.loggingIn : t.login.loginButton}</span>
+                  <span>{isLoading ? t.login.loggingIn : (lang === 'mm' ? 'ဝင်ရောက်ရန်' : 'Log In')}</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </form>

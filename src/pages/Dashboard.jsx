@@ -21,7 +21,8 @@ import {
   Radio,
   Send,
   X,
-  Image as ImageIcon
+  Image as ImageIcon,
+  LogOut,
 } from 'lucide-react';
 import { useShopStore } from '../store/shopStore.jsx';
 import OrderTable from '../components/OrderTable.jsx';
@@ -34,6 +35,8 @@ export default function Dashboard({ onNavigate }) {
   const {
     lang,
     t,
+    logout,
+    currentShop,
     products,
     addProduct,
     updateProduct,
@@ -282,7 +285,7 @@ export default function Dashboard({ onNavigate }) {
                 </span>
               </div>
               <p className="text-xs text-neutral-500 font-medium">
-                Telegram: <span className="font-bold text-[#6B4FD8]">@AiMindsetShopBot</span> • Official Storefront
+                Telegram: <span className="font-bold text-[#6B4FD8]">@{currentShop?.bot_username || 'aimindsetshop_bot'}</span> • Official Storefront
               </p>
             </div>
           </div>
@@ -318,6 +321,19 @@ export default function Dashboard({ onNavigate }) {
               <Download className="w-3.5 h-3.5 text-[#144735]" />
               <span className="hidden sm:inline">{t.dashboard.exportOrders}</span>
               <span className="sm:hidden">Orders CSV</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={async () => {
+                await logout();
+                onNavigate('/login');
+              }}
+              className="px-3.5 py-2 rounded-full bg-white text-[#8C2442] hover:bg-[#FFD6E0]/40 border-2 border-[#FFA8BF] text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+              title={t.nav.logout}
+            >
+              <LogOut className="w-3.5 h-3.5 text-[#8C2442]" />
+              <span>{lang === 'mm' ? 'အကောင့်ထွက်ရန်' : 'Sign Out'}</span>
             </button>
           </div>
         </div>

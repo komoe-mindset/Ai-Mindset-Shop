@@ -27,6 +27,8 @@ export default function Shop({ onOpenCart, onNavigate }) {
     cartTotalItems,
     orders,
     myOrderIds,
+    shopNotFound,
+    currentShop,
   } = useShopStore();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -60,7 +62,7 @@ export default function Shop({ onOpenCart, onNavigate }) {
       <div className="bg-[#2481CC] text-white px-3 py-1.5 text-[11px] font-semibold flex items-center justify-between shadow-xs">
         <div className="flex items-center gap-1.5">
           <span className="w-2 h-2 rounded-full bg-[#4ADE80] animate-pulse" />
-          <span>Telegram Web App • @AiMindsetShopBot</span>
+          <span>Telegram Web App • @{currentShop?.bot_username || 'aimindsetshop_bot'}</span>
         </div>
         <button
           type="button"
@@ -162,23 +164,31 @@ export default function Shop({ onOpenCart, onNavigate }) {
           <div className="cartoon-card p-12 text-center bg-white border-2 border-[#2D2A45]/10 my-8">
             <MindyMascot mood="empty" size={130} className="mx-auto mb-3" />
             <h3 className="text-lg font-extrabold text-[#2D2A45] font-display mb-1">
-              {t.products.noProductsFound}
+              {shopNotFound
+                ? (lang === 'mm' ? 'ဆိုင် ရှာမတွေ့ပါ' : 'Shop Not Found')
+                : t.products.noProductsFound}
             </h3>
             <p className="text-xs text-neutral-500 mb-4">
-              {lang === 'mm'
-                ? 'အခြားသော ပစ္စည်းအမည် သို့မဟုတ် အမျိုးအစားကို ရွေးချယ်ရှာဖွေကြည့်ပါ'
-                : 'Try clearing your search query or selecting a different category.'}
+              {shopNotFound
+                ? (lang === 'mm'
+                    ? 'ဤဆိုင်လိပ်စာကို ရှာမတွေ့ပါ။ URL (?shop=...) ကို စစ်ဆေးပေးပါ။'
+                    : 'The requested shop could not be found. Please check the shop URL parameter.')
+                : (lang === 'mm'
+                    ? 'အခြားသော ပစ္စည်းအမည် သို့မဟုတ် အမျိုးအစားကို ရွေးချယ်ရှာဖွေကြည့်ပါ'
+                    : 'Try clearing your search query or selecting a different category.')}
             </p>
-            <button
-              type="button"
-              onClick={() => {
-                setSearchQuery('');
-                setSelectedCategory('all');
-              }}
-              className="cartoon-btn-mint px-5 py-2 text-xs cursor-pointer"
-            >
-              {lang === 'mm' ? 'အားလုံး ပြန်ကြည့်မည်' : 'Reset Filters'}
-            </button>
+            {!shopNotFound && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery('');
+                  setSelectedCategory('all');
+                }}
+                className="cartoon-btn-mint px-5 py-2 text-xs cursor-pointer"
+              >
+                {lang === 'mm' ? 'အားလုံး ပြန်ကြည့်မည်' : 'Reset Filters'}
+              </button>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-6">

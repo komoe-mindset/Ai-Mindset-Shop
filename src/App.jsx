@@ -67,7 +67,11 @@ function AppContent() {
         {currentRoute === '/login' && <Login onNavigate={navigateTo} />}
 
         {currentRoute === '/dashboard' && (
-          <Dashboard onNavigate={navigateTo} />
+          isAuthenticated ? (
+            <Dashboard onNavigate={navigateTo} />
+          ) : (
+            <Login onNavigate={navigateTo} />
+          )
         )}
 
         {currentRoute === '/shop' && (

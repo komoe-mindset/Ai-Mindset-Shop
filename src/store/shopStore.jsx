@@ -11,14 +11,36 @@ const STORAGE_KEYS = {
   CART: 'aimindset_shop_cart_v1',
   LANG: 'aimindset_shop_lang_v1',
   USER_ORDERS: 'aimindset_shop_my_orders_v1',
-  AUTH: 'aimindset_shop_auth_v1',
 };
+
+// Read ?shop= parameter from URL (default 'ai-mindset-shop')
+export function getShopSlugFromUrl() {
+  try {
+    const searchParams = new URLSearchParams(window.location.search);
+    const searchSlug = searchParams.get('shop');
+    if (searchSlug && searchSlug.trim()) {
+      return searchSlug.trim();
+    }
+    const hash = window.location.hash || '';
+    if (hash.includes('?')) {
+      const hashParams = new URLSearchParams(hash.substring(hash.indexOf('?')));
+      const hashSlug = hashParams.get('shop');
+      if (hashSlug && hashSlug.trim()) {
+        return hashSlug.trim();
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return 'ai-mindset-shop';
+}
 
 // Database mappers: snake_case to camelCase
 function mapProductFromDb(row) {
   if (!row) return null;
   return {
     id: row.id,
+    shopId: row.shop_id || null,
     name: row.name || '',
     nameMm: row.name_mm ?? row.name ?? '',
     priceKs: Number(row.price_ks) || 0,
@@ -36,6 +58,8 @@ function mapOrderFromDb(row) {
   if (!row) return null;
   return {
     id: row.id,
+    shopId: row.shop_id || null,
+    telegramUserId: row.telegram_user_id ? Number(row.telegram_user_id) : null,
     customerName: row.customer_name || '',
     phone: row.phone || '',
     address: row.address || '',
@@ -53,6 +77,7 @@ function mapFaqFromDb(row) {
   if (!row) return null;
   return {
     id: row.id,
+    shopId: row.shop_id || null,
     question: row.question || '',
     questionMm: row.question_mm ?? row.question ?? '',
     answer: row.answer || '',
@@ -76,21 +101,16 @@ export function ShopProvider({ children }) {
     localStorage.setItem(STORAGE_KEYS.LANG, newLang);
   };
 
-  // Auth mock state for Merchant Dashboard demo (kept in localStorage)
-  const [isAuthenticated, setIsAuthenticated] = useState(() => {
-    return localStorage.getItem(STORAGE_KEYS.AUTH) === 'true';
+  // Auth session state (managed via Supabase Auth)
+  const [session, setSession] = useState(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  // Shop state (Change 1: read from URL and store currentShopId)
+  const [currentShopId, setCurrentShopId] = useState(() => {
+    return !isSupabaseConfigured ? 'e20baa90-1c1f-481f-b16f-61a44b60566a' : null;
   });
-
-  const loginDemo = () => {
-    // TODO - replace demo login with Supabase Auth.
-    setIsAuthenticated(true);
-    localStorage.setItem(STORAGE_KEYS.AUTH, 'true');
-  };
-
-  const logout = () => {
-    setIsAuthenticated(false);
-    localStorage.removeItem(STORAGE_KEYS.AUTH);
-  };
+  const [currentShop, setCurrentShop] = useState(null);
+  const [shopNotFound, setShopNotFound] = useState(false);
 
   // Loading and error states for Supabase
   const [isLoading, setIsLoading] = useState(isSupabaseConfigured);
@@ -160,7 +180,95 @@ export function ShopProvider({ children }) {
     return [];
   });
 
-  // Initial fetch from Supabase on mount when configured
+  // Helper to ensure currentShopId is available before any write (Change 2)
+  const resolveShopId = async () => {
+    if (currentShopId) return currentShopId;
+    if (!isSupabaseConfigured || !supabase) {
+      return 'e20baa90-1c1f-481f-b16f-61a44b60566a';
+    }
+    const slug = getShopSlugFromUrl();
+    try {
+      const { data, error } = await supabase
+        .from('shops')
+        .select('*')
+        .eq('slug', slug)
+        .maybeSingle();
+
+      if (error || !data) {
+        console.warn('Could not resolve shop for slug in Supabase, using default shop:', slug, error?.message || error);
+        return 'e20baa90-1c1f-481f-b16f-61a44b60566a';
+      }
+      setCurrentShopId(data.id);
+      setCurrentShop(data);
+      return data.id;
+    } catch (err) {
+      console.warn('Exception resolving shop id, using default shop:', err?.message || err);
+      return 'e20baa90-1c1f-481f-b16f-61a44b60566a';
+    }
+  };
+
+  // Change 4: Supabase Auth Session listener
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) {
+      return;
+    }
+
+    supabase.auth.getSession().then(({ data: { session: initialSession } }) => {
+      setSession(initialSession);
+      setIsAuthenticated(Boolean(initialSession));
+    }).catch((err) => {
+      console.warn('Error fetching Supabase session:', err?.message || err);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, currentSession) => {
+      setSession(currentSession);
+      setIsAuthenticated(Boolean(currentSession));
+    });
+
+    return () => {
+      subscription?.unsubscribe();
+    };
+  }, []);
+
+  // Change 4: Real Supabase Auth login
+  const login = async ({ email, password }) => {
+    if (!isSupabaseConfigured || !supabase) {
+      setIsAuthenticated(true);
+      return { success: true };
+    }
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+      if (error) {
+        console.warn('Supabase signInWithPassword error:', error.message);
+        return { success: false, error: error.message };
+      }
+      setSession(data.session);
+      setIsAuthenticated(Boolean(data.session));
+      return { success: true, session: data.session };
+    } catch (err) {
+      console.warn('Supabase login exception:', err?.message || err);
+      return { success: false, error: err.message || 'Login failed' };
+    }
+  };
+
+  // Change 4: Sign out calling supabase.auth.signOut()
+  const logout = async () => {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.auth.signOut();
+      } catch (err) {
+        console.warn('Supabase signOut error:', err?.message || err);
+      }
+    }
+    setSession(null);
+    setIsAuthenticated(false);
+    setOrders([]);
+  };
+
+  // Change 1 & Change 7: Split initial load & filter by currentShopId
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) {
       setIsLoading(false);
@@ -169,34 +277,111 @@ export function ShopProvider({ children }) {
 
     let isMounted = true;
 
-    async function fetchFromSupabase() {
+    async function loadShopData() {
       setIsLoading(true);
+      const slug = getShopSlugFromUrl();
+
       try {
-        const [productsRes, ordersRes, faqsRes] = await Promise.all([
-          supabase.from('products').select('*').order('created_at', { ascending: false }),
-          supabase.from('orders').select('*').order('created_at', { ascending: false }),
-          supabase.from('faqs').select('*').order('created_at', { ascending: false }),
+        // Look up the shop row by slug
+        const { data: shopData, error: shopErr } = await supabase
+          .from('shops')
+          .select('*')
+          .eq('slug', slug)
+          .maybeSingle();
+
+        if (shopErr) {
+          throw shopErr;
+        }
+
+        if (!shopData) {
+          console.warn(`Shop with slug "${slug}" not found.`);
+          if (isMounted) {
+            setShopNotFound(true);
+            setCurrentShopId(null);
+            setCurrentShop(null);
+            setProducts([]);
+            setFaqs([]);
+            setOrders([]);
+            setSupabaseError(null);
+          }
+          return;
+        }
+
+        const shopId = shopData.id;
+        if (isMounted) {
+          setCurrentShopId(shopId);
+          setCurrentShop(shopData);
+          setShopNotFound(false);
+        }
+
+        // Load products (filtered by currentShopId, active = true for anonymous customers)
+        let productsQuery = supabase
+          .from('products')
+          .select('*')
+          .eq('shop_id', shopId);
+
+        if (!session) {
+          productsQuery = productsQuery.eq('active', true);
+        }
+        productsQuery = productsQuery.order('created_at', { ascending: false });
+
+        // Load FAQs (filtered by currentShopId)
+        const faqsQuery = supabase
+          .from('faqs')
+          .select('*')
+          .eq('shop_id', shopId)
+          .order('created_at', { ascending: false });
+
+        const [productsRes, faqsRes] = await Promise.all([
+          productsQuery,
+          faqsQuery,
         ]);
 
         if (productsRes.error) throw productsRes.error;
-        if (ordersRes.error) throw ordersRes.error;
         if (faqsRes.error) throw faqsRes.error;
 
         if (isMounted) {
-          const mappedProducts = (productsRes.data || []).map(mapProductFromDb);
-          const mappedOrders = (ordersRes.data || []).map(mapOrderFromDb);
-          const mappedFaqs = (faqsRes.data || []).map(mapFaqFromDb);
-
-          setProducts(mappedProducts);
-          setOrders(mappedOrders);
-          setFaqs(mappedFaqs);
+          setProducts((productsRes.data || []).map(mapProductFromDb));
+          setFaqs((faqsRes.data || []).map(mapFaqFromDb));
           setSupabaseError(null);
         }
+
+        // Change 7: Load orders ONLY when a merchant session exists, filtered by currentShopId
+        if (session) {
+          try {
+            const ordersRes = await supabase
+              .from('orders')
+              .select('*')
+              .eq('shop_id', shopId)
+              .order('created_at', { ascending: false });
+
+            if (ordersRes.error) {
+              console.warn('Error fetching merchant orders:', ordersRes.error?.message || ordersRes.error);
+            } else if (isMounted) {
+              setOrders((ordersRes.data || []).map(mapOrderFromDb));
+            }
+          } catch (ordErr) {
+            console.warn('Exception fetching merchant orders:', ordErr?.message || ordErr);
+          }
+        } else {
+          // Anonymous customers have no orders list from Supabase
+          if (isMounted) {
+            setOrders([]);
+          }
+        }
       } catch (err) {
-        console.error('Supabase connection error:', err);
+        console.warn('Supabase connection error:', err?.message || err);
         if (isMounted) {
           setSupabaseError('Supabase connection failed, showing demo data');
-          // Fallback to sample data when Supabase connection fails
+          // Fall back to sample data ONLY when Supabase connection fails
+          setCurrentShopId('e20baa90-1c1f-481f-b16f-61a44b60566a');
+          setCurrentShop({
+            id: 'e20baa90-1c1f-481f-b16f-61a44b60566a',
+            slug: slug || 'ai-mindset-shop',
+            bot_username: 'aimindsetshop_bot',
+            name: 'AiMindset Shop',
+          });
+          setShopNotFound(false);
           setProducts(INITIAL_PRODUCTS);
           setOrders(INITIAL_ORDERS);
           setFaqs(INITIAL_FAQS);
@@ -208,12 +393,12 @@ export function ShopProvider({ children }) {
       }
     }
 
-    fetchFromSupabase();
+    loadShopData();
 
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [session]);
 
   // When Supabase is NOT configured, persist products, orders, and faqs to localStorage
   useEffect(() => {
@@ -243,22 +428,20 @@ export function ShopProvider({ children }) {
     localStorage.setItem(STORAGE_KEYS.USER_ORDERS, JSON.stringify(myOrderIds));
   }, [myOrderIds]);
 
-  // Generate next sequential AMS-#### Order ID from the highest existing order id
+  // Change 7: Generate unique AMS- order ID using Date.now() instead of reading orders array
   const generateNextOrderId = () => {
-    let maxNumber = 1000;
-    orders.forEach((ord) => {
-      if (typeof ord.id === 'string' && ord.id.startsWith('AMS-')) {
-        const num = parseInt(ord.id.replace('AMS-', ''), 10);
-        if (!isNaN(num) && num > maxNumber) {
-          maxNumber = num;
-        }
-      }
-    });
-    return `AMS-${maxNumber + 1}`;
+    return `AMS-${Date.now()}`;
   };
 
-  // PRODUCT ACTIONS
+  // PRODUCT ACTIONS (Change 2: Always send shop_id)
   const addProduct = async (newProductData) => {
+    const shopId = await resolveShopId();
+    if (!shopId) {
+      console.warn('Cannot add product: shop_id is missing');
+      setSupabaseError('Shop not found, cannot add product');
+      return null;
+    }
+
     const timestamp = Date.now();
     const id = `prod-${timestamp}`;
     const name = newProductData.name.trim();
@@ -274,6 +457,7 @@ export function ShopProvider({ children }) {
     if (isSupabaseConfigured && supabase) {
       const dbRow = {
         id,
+        shop_id: shopId,
         name,
         name_mm: nameMm,
         price_ks: priceKs,
@@ -289,21 +473,22 @@ export function ShopProvider({ children }) {
       try {
         const { data, error } = await supabase.from('products').insert([dbRow]).select().single();
         if (error) {
-          console.error('Supabase addProduct error:', error);
-          setSupabaseError('Supabase connection failed, showing demo data');
+          console.warn('Supabase addProduct error:', error?.message || error);
+          setSupabaseError(`Failed to add product: ${error.message}`);
           return null;
         }
         const mapped = mapProductFromDb(data || dbRow);
         setProducts((prev) => [mapped, ...prev]);
         return mapped;
       } catch (err) {
-        console.error('Supabase addProduct exception:', err);
-        setSupabaseError('Supabase connection failed, showing demo data');
+        console.warn('Supabase addProduct exception:', err?.message || err);
+        setSupabaseError('Failed to add product');
         return null;
       }
     } else {
       const newProduct = {
         id,
+        shopId,
         name,
         nameMm,
         priceKs,
@@ -321,8 +506,10 @@ export function ShopProvider({ children }) {
   };
 
   const updateProduct = async (id, updatedFields) => {
+    const shopId = await resolveShopId();
     if (isSupabaseConfigured && supabase) {
       const updatePayload = {};
+      if (shopId) updatePayload.shop_id = shopId;
       if (updatedFields.name !== undefined) updatePayload.name = updatedFields.name;
       if (updatedFields.nameMm !== undefined) updatePayload.name_mm = updatedFields.nameMm;
       if (updatedFields.priceKs !== undefined) updatePayload.price_ks = Number(updatedFields.priceKs);
@@ -334,15 +521,17 @@ export function ShopProvider({ children }) {
       if (updatedFields.active !== undefined) updatePayload.active = updatedFields.active;
 
       try {
-        const { error } = await supabase.from('products').update(updatePayload).eq('id', id);
+        let query = supabase.from('products').update(updatePayload).eq('id', id);
+        if (shopId) query = query.eq('shop_id', shopId);
+        const { error } = await query;
         if (error) {
-          console.error('Supabase updateProduct error:', error);
-          setSupabaseError('Supabase connection failed, showing demo data');
+          console.warn('Supabase updateProduct error:', error?.message || error);
+          setSupabaseError(`Failed to update product: ${error.message}`);
           return;
         }
       } catch (err) {
-        console.error('Supabase updateProduct exception:', err);
-        setSupabaseError('Supabase connection failed, showing demo data');
+        console.warn('Supabase updateProduct exception:', err?.message || err);
+        setSupabaseError('Failed to update product');
         return;
       }
     }
@@ -363,17 +552,20 @@ export function ShopProvider({ children }) {
   };
 
   const deleteProduct = async (id) => {
+    const shopId = await resolveShopId();
     if (isSupabaseConfigured && supabase) {
       try {
-        const { error } = await supabase.from('products').delete().eq('id', id);
+        let query = supabase.from('products').delete().eq('id', id);
+        if (shopId) query = query.eq('shop_id', shopId);
+        const { error } = await query;
         if (error) {
-          console.error('Supabase deleteProduct error:', error);
-          setSupabaseError('Supabase connection failed, showing demo data');
+          console.warn('Supabase deleteProduct error:', error?.message || error);
+          setSupabaseError(`Failed to delete product: ${error.message}`);
           return;
         }
       } catch (err) {
-        console.error('Supabase deleteProduct exception:', err);
-        setSupabaseError('Supabase connection failed, showing demo data');
+        console.warn('Supabase deleteProduct exception:', err?.message || err);
+        setSupabaseError('Failed to delete product');
         return;
       }
     }
@@ -383,23 +575,23 @@ export function ShopProvider({ children }) {
   };
 
   const restockProduct = async (id, amount = 10) => {
+    const shopId = await resolveShopId();
     const currentProd = products.find((p) => p.id === id);
     const newStock = (currentProd ? currentProd.stock : 0) + amount;
 
     if (isSupabaseConfigured && supabase) {
       try {
-        const { error } = await supabase
-          .from('products')
-          .update({ stock: newStock })
-          .eq('id', id);
+        let query = supabase.from('products').update({ stock: newStock }).eq('id', id);
+        if (shopId) query = query.eq('shop_id', shopId);
+        const { error } = await query;
         if (error) {
-          console.error('Supabase restockProduct error:', error);
-          setSupabaseError('Supabase connection failed, showing demo data');
+          console.warn('Supabase restockProduct error:', error?.message || error);
+          setSupabaseError(`Failed to restock product: ${error.message}`);
           return;
         }
       } catch (err) {
-        console.error('Supabase restockProduct exception:', err);
-        setSupabaseError('Supabase connection failed, showing demo data');
+        console.warn('Supabase restockProduct exception:', err?.message || err);
+        setSupabaseError('Failed to restock product');
         return;
       }
     }
@@ -409,11 +601,24 @@ export function ShopProvider({ children }) {
     );
   };
 
-  // ORDER ACTIONS
+  // ORDER ACTIONS (Changes 2, 3, 5, 6, 7)
   const placeOrder = ({ customerName, phone, address, items, deliveryFeeKs = 2500, paymentMethod = 'Cash on Delivery' }) => {
     const subtotal = items.reduce((sum, item) => sum + item.priceKs * item.quantity, 0);
     const totalKs = subtotal + deliveryFeeKs;
     const newId = generateNextOrderId();
+
+    // Change 3: Read Telegram user id if inside Telegram Mini App
+    let telegramUserId = undefined;
+    try {
+      const tgId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id;
+      if (typeof tgId === 'number' && !isNaN(tgId)) {
+        telegramUserId = tgId;
+      } else if (typeof tgId === 'string' && /^\d+$/.test(tgId)) {
+        telegramUserId = Number(tgId);
+      }
+    } catch {
+      // ignore
+    }
 
     const orderData = {
       id: newId,
@@ -424,54 +629,72 @@ export function ShopProvider({ children }) {
         productId: i.productId,
         name: i.name,
         priceKs: i.priceKs,
-        quantity: i.quantity,
+        quantity: i.quantity, // quantity, NOT qty
       })),
       deliveryFeeKs,
       totalKs,
-      status: 'Pending',
+      status: 'Pending', // Enforce 'Pending' - do not let caller override
       paymentMethod,
       createdAt: new Date().toISOString(),
       isNew: true,
+      shopId: currentShopId,
+      ...(telegramUserId !== undefined ? { telegramUserId } : {}),
     };
 
     if (isSupabaseConfigured && supabase) {
-      const orderRow = {
-        id: newId,
-        customer_name: orderData.customerName,
-        phone: orderData.phone,
-        address: orderData.address,
-        items: orderData.items,
-        delivery_fee_ks: orderData.deliveryFeeKs,
-        total_ks: orderData.totalKs,
-        status: 'Pending',
-        payment_method: orderData.paymentMethod,
-        is_new: true,
-        created_at: orderData.createdAt,
-      };
-
       const asyncOrderFlow = async () => {
         try {
-          const { data, error } = await supabase.from('orders').insert([orderRow]).select().single();
-          if (error) {
-            console.error('Supabase placeOrder error:', error);
-            setSupabaseError('Supabase connection failed, showing demo data');
+          // Change 2: Do not send shop_id as null; wait for currentShopId
+          const shopId = await resolveShopId();
+          if (!shopId) {
+            console.warn('Cannot place order: shop_id is required');
+            setSupabaseError('Shop not found, cannot place order');
             return null;
           }
 
-          // Decrement stock for each ordered product in the products table
+          const orderRow = {
+            id: newId,
+            shop_id: shopId,
+            customer_name: orderData.customerName,
+            phone: orderData.phone,
+            address: orderData.address,
+            items: orderData.items,
+            delivery_fee_ks: orderData.deliveryFeeKs,
+            total_ks: orderData.totalKs,
+            status: 'Pending', // Enforce 'Pending'
+            payment_method: orderData.paymentMethod,
+            is_new: true,
+            created_at: orderData.createdAt,
+          };
+
+          // Change 3: Include telegram_user_id (number) when inside Telegram
+          if (telegramUserId !== undefined) {
+            orderRow.telegram_user_id = telegramUserId;
+          }
+
+          // Change 7: Insert without .select() because anonymous customers have no SELECT policy
+          const { error: insertError } = await supabase.from('orders').insert([orderRow]);
+          if (insertError) {
+            console.warn('Supabase placeOrder insert error:', insertError?.message || insertError);
+            setSupabaseError(`Order insert failed: ${insertError.message}`);
+            return null;
+          }
+
+          // Change 5: Call decrement_stock RPC for each item using quantity (NOT qty)
           for (const it of items) {
-            const currentProd = products.find((p) => p.id === it.productId);
-            if (currentProd) {
-              const remainingStock = Math.max(0, currentProd.stock - it.quantity);
-              await supabase
-                .from('products')
-                .update({ stock: remainingStock })
-                .eq('id', it.productId);
+            const { error: rpcError } = await supabase.rpc('decrement_stock', {
+              p_product_id: it.productId,
+              p_qty: Number(it.quantity),
+              p_shop_id: shopId,
+            });
+            if (rpcError) {
+              console.warn(`Supabase decrement_stock error for product ${it.productId}:`, rpcError?.message || rpcError);
+              setSupabaseError(`Failed to update product stock: ${rpcError.message}`);
             }
           }
 
           // Only after a successful insert, update local orders, myOrderIds, product stock, and clear the cart
-          const savedOrder = mapOrderFromDb(data || orderRow);
+          orderData.shopId = shopId;
           setProducts((prev) =>
             prev.map((prod) => {
               const ordered = items.find((i) => i.productId === prod.id);
@@ -482,13 +705,13 @@ export function ShopProvider({ children }) {
               return prod;
             })
           );
-          setOrders((prev) => [savedOrder, ...prev]);
+          setOrders((prev) => [orderData, ...prev]);
           setMyOrderIds((prev) => [newId, ...prev]);
           setCart([]);
-          return savedOrder;
+          return orderData;
         } catch (err) {
-          console.error('Supabase placeOrder exception:', err);
-          setSupabaseError('Supabase connection failed, showing demo data');
+          console.warn('Supabase placeOrder exception:', err?.message || err);
+          setSupabaseError('Order placement failed');
           return null;
         }
       };
@@ -513,7 +736,6 @@ export function ShopProvider({ children }) {
         })
       );
 
-      // Add to orders, myOrderIds, and clear cart
       setOrders((prev) => [orderData, ...prev]);
       setMyOrderIds((prev) => [newId, ...prev]);
       setCart([]);
@@ -522,20 +744,23 @@ export function ShopProvider({ children }) {
   };
 
   const updateOrderStatus = async (orderId, newStatus) => {
+    const shopId = await resolveShopId();
     if (isSupabaseConfigured && supabase) {
       try {
-        const { error } = await supabase
+        let query = supabase
           .from('orders')
           .update({ status: newStatus, is_new: false })
           .eq('id', orderId);
+        if (shopId) query = query.eq('shop_id', shopId);
+        const { error } = await query;
         if (error) {
-          console.error('Supabase updateOrderStatus error:', error);
-          setSupabaseError('Supabase connection failed, showing demo data');
+          console.warn('Supabase updateOrderStatus error:', error?.message || error);
+          setSupabaseError(`Failed to update order status: ${error.message}`);
           return;
         }
       } catch (err) {
-        console.error('Supabase updateOrderStatus exception:', err);
-        setSupabaseError('Supabase connection failed, showing demo data');
+        console.warn('Supabase updateOrderStatus exception:', err?.message || err);
+        setSupabaseError('Failed to update order status');
         return;
       }
     }
@@ -546,17 +771,20 @@ export function ShopProvider({ children }) {
   };
 
   const markOrderSeen = async (orderId) => {
+    const shopId = await resolveShopId();
     if (isSupabaseConfigured && supabase) {
       try {
-        const { error } = await supabase
+        let query = supabase
           .from('orders')
           .update({ is_new: false })
           .eq('id', orderId);
+        if (shopId) query = query.eq('shop_id', shopId);
+        const { error } = await query;
         if (error) {
-          console.error('Supabase markOrderSeen error:', error);
+          console.warn('Supabase markOrderSeen error:', error?.message || error);
         }
       } catch (err) {
-        console.error('Supabase markOrderSeen exception:', err);
+        console.warn('Supabase markOrderSeen exception:', err?.message || err);
       }
     }
 
@@ -567,6 +795,12 @@ export function ShopProvider({ children }) {
 
   // FAQ ACTIONS
   const addFaq = async ({ question, answer, questionMm, answerMm }) => {
+    const shopId = await resolveShopId();
+    if (!shopId) {
+      console.warn('Cannot add FAQ: shop_id is required');
+      setSupabaseError('Shop not found, cannot add FAQ');
+      return null;
+    }
     const newId = `faq-${Date.now()}`;
     const q = question.trim();
     const a = answer.trim();
@@ -576,6 +810,7 @@ export function ShopProvider({ children }) {
     if (isSupabaseConfigured && supabase) {
       const dbRow = {
         id: newId,
+        shop_id: shopId,
         question: q,
         question_mm: qMm,
         answer: a,
@@ -586,21 +821,22 @@ export function ShopProvider({ children }) {
       try {
         const { data, error } = await supabase.from('faqs').insert([dbRow]).select().single();
         if (error) {
-          console.error('Supabase addFaq error:', error);
-          setSupabaseError('Supabase connection failed, showing demo data');
+          console.warn('Supabase addFaq error:', error?.message || error);
+          setSupabaseError(`Failed to add FAQ: ${error.message}`);
           return null;
         }
         const mapped = mapFaqFromDb(data || dbRow);
         setFaqs((prev) => [mapped, ...prev]);
         return mapped;
       } catch (err) {
-        console.error('Supabase addFaq exception:', err);
-        setSupabaseError('Supabase connection failed, showing demo data');
+        console.warn('Supabase addFaq exception:', err?.message || err);
+        setSupabaseError('Failed to add FAQ');
         return null;
       }
     } else {
       const newFaq = {
         id: newId,
+        shopId,
         question: q,
         answer: a,
         questionMm: qMm,
@@ -613,17 +849,20 @@ export function ShopProvider({ children }) {
   };
 
   const deleteFaq = async (id) => {
+    const shopId = await resolveShopId();
     if (isSupabaseConfigured && supabase) {
       try {
-        const { error } = await supabase.from('faqs').delete().eq('id', id);
+        let query = supabase.from('faqs').delete().eq('id', id);
+        if (shopId) query = query.eq('shop_id', shopId);
+        const { error } = await query;
         if (error) {
-          console.error('Supabase deleteFaq error:', error);
-          setSupabaseError('Supabase connection failed, showing demo data');
+          console.warn('Supabase deleteFaq error:', error?.message || error);
+          setSupabaseError(`Failed to delete FAQ: ${error.message}`);
           return;
         }
       } catch (err) {
-        console.error('Supabase deleteFaq exception:', err);
-        setSupabaseError('Supabase connection failed, showing demo data');
+        console.warn('Supabase deleteFaq exception:', err?.message || err);
+        setSupabaseError('Failed to delete FAQ');
         return;
       }
     }
@@ -707,9 +946,13 @@ export function ShopProvider({ children }) {
         lang,
         setLanguage,
         t,
+        session,
         isAuthenticated,
-        loginDemo,
+        login,
         logout,
+        currentShopId,
+        currentShop,
+        shopNotFound,
         products,
         addProduct,
         updateProduct,
