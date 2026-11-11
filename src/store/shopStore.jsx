@@ -35,6 +35,26 @@ export function getShopSlugFromUrl() {
   return 'ai-mindset-shop';
 }
 
+// Retry helper for transient Supabase network errors (e.g. the occasional
+// "connection closed" from the API gateway). Rebuilds the query on each
+// attempt because a Supabase query builder must not be re-awaited.
+async function queryWithRetry(buildQuery, attempts = 3) {
+  let lastError = null;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      const res = await buildQuery();
+      if (res.error) throw res.error;
+      return res;
+    } catch (err) {
+      lastError = err;
+      if (attempt < attempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastError;
+}
+
 // Database mappers: snake_case to camelCase
 function mapProductFromDb(row) {
   if (!row) return null;
@@ -282,16 +302,14 @@ export function ShopProvider({ children }) {
       const slug = getShopSlugFromUrl();
 
       try {
-        // Look up the shop row by slug
-        const { data: shopData, error: shopErr } = await supabase
-          .from('shops')
-          .select('*')
-          .eq('slug', slug)
-          .maybeSingle();
-
-        if (shopErr) {
-          throw shopErr;
-        }
+        // Look up the shop row by slug (retry transient network errors)
+        const { data: shopData } = await queryWithRetry(() =>
+          supabase
+            .from('shops')
+            .select('*')
+            .eq('slug', slug)
+            .maybeSingle()
+        );
 
         if (!shopData) {
           console.warn(`Shop with slug "${slug}" not found.`);
@@ -315,34 +333,50 @@ export function ShopProvider({ children }) {
         }
 
         // Load products (filtered by currentShopId, active = true for anonymous customers)
-        let productsQuery = supabase
-          .from('products')
-          .select('*')
-          .eq('shop_id', shopId);
-
-        if (!session) {
-          productsQuery = productsQuery.eq('active', true);
-        }
-        productsQuery = productsQuery.order('created_at', { ascending: false });
+        const buildProductsQuery = () => {
+          let q = supabase
+            .from('products')
+            .select('*')
+            .eq('shop_id', shopId);
+          if (!session) {
+            q = q.eq('active', true);
+          }
+          return q.order('created_at', { ascending: false });
+        };
 
         // Load FAQs (filtered by currentShopId)
-        const faqsQuery = supabase
-          .from('faqs')
-          .select('*')
-          .eq('shop_id', shopId)
-          .order('created_at', { ascending: false });
+        const buildFaqsQuery = () =>
+          supabase
+            .from('faqs')
+            .select('*')
+            .eq('shop_id', shopId)
+            .order('created_at', { ascending: false });
 
-        const [productsRes, faqsRes] = await Promise.all([
-          productsQuery,
-          faqsQuery,
+        // Load products and FAQs independently, each with retries: one
+        // transient failure must not blank the whole shop. Only a products
+        // failure after all retries falls back to demo data.
+        const [productsRes, faqsRes] = await Promise.allSettled([
+          queryWithRetry(buildProductsQuery),
+          queryWithRetry(buildFaqsQuery),
         ]);
 
-        if (productsRes.error) throw productsRes.error;
-        if (faqsRes.error) throw faqsRes.error;
+        if (productsRes.status === 'rejected') {
+          throw productsRes.reason;
+        }
+        if (faqsRes.status === 'rejected') {
+          console.warn(
+            'Supabase FAQs failed after retries, showing products without FAQs:',
+            faqsRes.reason?.message || faqsRes.reason
+          );
+        }
 
         if (isMounted) {
-          setProducts((productsRes.data || []).map(mapProductFromDb));
-          setFaqs((faqsRes.data || []).map(mapFaqFromDb));
+          setProducts(
+            (productsRes.status === 'fulfilled' ? productsRes.value.data || [] : []).map(mapProductFromDb)
+          );
+          setFaqs(
+            (faqsRes.status === 'fulfilled' ? faqsRes.value.data || [] : []).map(mapFaqFromDb)
+          );
           setSupabaseError(null);
         }
 
